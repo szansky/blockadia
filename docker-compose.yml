@@ -1,0 +1,16 @@
+version: "3.9"
+services:
+  db:
+    image: postgres:16
+    container_name: blockadia-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: blockadia
+      POSTGRES_PASSWORD: blockadia
+      POSTGRES_DB: blockadia
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+volumes:
+  postgres_data:
