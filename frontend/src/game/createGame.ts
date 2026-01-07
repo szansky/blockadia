@@ -3,6 +3,13 @@ import { translations, Language } from "../i18n";
 
 type VillagerState = "idle" | "walking" | "gathering" | "returning";
 
+interface SoldierData {
+  sprite: Phaser.GameObjects.Sprite;
+  state: "idle" | "walking" | "attacking";
+  targetUnit?: any;
+  textLabel?: Phaser.GameObjects.Text;
+}
+
 interface VillagerData {
   sprite: Phaser.GameObjects.Sprite;
   state: VillagerState;
@@ -37,6 +44,8 @@ interface Building {
   recruitTimer?: Phaser.Time.TimerEvent;
   tileX: number;
   tileY: number;
+  assignedVillagers: number;
+  productionTimer?: Phaser.Time.TimerEvent;
 }
 
 interface DroppedResource {
@@ -59,10 +68,13 @@ class WorldScene extends Phaser.Scene {
 
   // Villagers
   private villagers: VillagerData[] = [];
+  private soldiers: SoldierData[] = [];
 
   // Selection
-  private selectedUnit: VillagerData | null = null;
-  private selectionIndicator!: Phaser.GameObjects.Graphics;
+  private selectedUnit: VillagerData | SoldierData | null = null;
+  private selectedResource: Phaser.GameObjects.Sprite | null = null; // New property
+  private selectionIndicator: Phaser.GameObjects.Graphics;
+
   private gatheringText!: Phaser.GameObjects.Text;
 
   // Store resource positions for click detection
@@ -73,7 +85,7 @@ class WorldScene extends Phaser.Scene {
   private droppedResources: DroppedResource[] = [];
 
   // Resource counts
-  private resources: ResourceCounts = { wood: 0, stone: 0, gold: 0, metal: 0 };
+  private resources: ResourceCounts = { wood: 500, stone: 500, gold: 500, metal: 500 };
 
   private villageSprite!: Phaser.GameObjects.Sprite;
   private buildings: Building[] = [];
@@ -201,7 +213,12 @@ class WorldScene extends Phaser.Scene {
     building.isRecruiting = false;
     building.recruitProgress = 0;
     if (building.recruitTimer) building.recruitTimer.remove();
-    this.spawnVillager(building.sprite.x, building.sprite.y); // Spawn at building
+
+    if (building.type === "barracks") {
+      this.spawnSoldier(building.sprite.x, building.sprite.y);
+    } else {
+      this.spawnVillager(building.sprite.x, building.sprite.y);
+    }
     this.emitBuildingUpdate(building);
   }
 
@@ -226,22 +243,28 @@ class WorldScene extends Phaser.Scene {
     this.load.image("grass", "/assets/grass.png");
     this.load.image("fog", "/assets/fog.png");
     this.load.image("particle", "/assets/particle.png"); // Magic particle
-    this.load.image("tree", "/assets/tree.png");
-    this.load.image("stone", "/assets/stone.png");
-    this.load.image("gold", "/assets/gold.png");
-    this.load.image("metal", "/assets/metal.png");
-    this.load.image("village", "/assets/village.png");
-    this.load.image("villager", "/assets/villager.png");
+    this.load.image("tree", "/assets/tree.webp");
+    this.load.image("stone", "/assets/stone.webp");
+    this.load.image("gold", "/assets/gold.webp");
+    this.load.image("metal", "/assets/metal.webp");
+    this.load.image("village", "/assets/village.webp");
+    this.load.image("villager", "/assets/villager.webp");
     this.load.image("village_v2", "/assets/village_v2.png");
     this.load.image("hammer", "/assets/hammer.png");
     this.load.image("hammer", "/assets/hammer.png");
     this.load.image("construction_site", "/assets/construction_site.png");
     this.load.image("farm", "/assets/farm.png"); // Farm Asset
+    this.load.image("barracks", "/assets/barracks.png");
+    this.load.image("soldier", "/assets/soldier.png");
+    this.load.image("gold_mine", "/assets/gold_mine.webp");
+    this.load.image("stone_mine", "/assets/stone_mine.webp");
+    this.load.image("metal_mine", "/assets/metal_mine.webp");
+    this.load.image("lumber_mill", "/assets/lumber_mill.webp");
   }
 
   create() {
     this.cameras.main.setZoom(1);
-    this.cameras.main.setBackgroundColor("#2d5a27"); // Infinite green background
+    this.cameras.main.setBackgroundColor("#6daa2c"); // Infinite bright green background
 
 
     this.graphics = this.add.graphics();
@@ -276,7 +299,7 @@ class WorldScene extends Phaser.Scene {
     backgroundTexture.setDepth(-1);
 
     // Simple solid fill is fastest and matches user request
-    backgroundTexture.fill(0x2d5a27); // A pleasant grass green
+    backgroundTexture.fill(0x6daa2c); // A pleasant bright grass green
 
     this.drawGrid();
 
@@ -303,6 +326,7 @@ class WorldScene extends Phaser.Scene {
       upgradeProgress: 0,
       isRecruiting: false,
       recruitProgress: 0,
+      assignedVillagers: 0,
       tileX: this.villageCenterX,
       tileY: this.villageCenterY
     });
@@ -402,44 +426,82 @@ class WorldScene extends Phaser.Scene {
         return;
       }
 
-      // Check click on resources
+      // Check click on resources or units
       const clickedVillager = this.villagers.find(v => {
         const vx = Math.floor(v.sprite.x / this.tileSize);
         const vy = Math.floor(v.sprite.y / this.tileSize);
         return vx === tileX && vy === tileY;
       });
 
-      if (clickedVillager) {
-        if (this.selectedUnit === clickedVillager) {
+      const clickedSoldier = this.soldiers.find(s => {
+        const sx = Math.floor(s.sprite.x / this.tileSize);
+        const sy = Math.floor(s.sprite.y / this.tileSize);
+        return sx === tileX && sy === tileY;
+      });
+
+      const clickedUnit = clickedVillager || clickedSoldier;
+
+      // Check click on resource
+      const clickedResource = this.resourceSprites.find(r => {
+        const rx = r.getData("tileX");
+        const ry = r.getData("tileY");
+        return rx === tileX && ry === tileY;
+      });
+
+      if (clickedUnit) {
+        if (this.selectedUnit === clickedUnit) {
           this.deselectUnit();
         } else {
-          this.selectUnit(clickedVillager);
+          this.selectUnit(clickedUnit);
         }
         return;
       }
 
+      if (clickedResource) {
+        if (this.selectedResource === clickedResource) {
+          this.deselectResource();
+        } else {
+          this.selectResource(clickedResource);
+        }
+        return;
+      }
+
+      // If clicked empty space, deselect everything
+      this.deselectUnit();
+
+
       // If unit selected, move or gather
       if (this.selectedUnit) {
-        // Check resource click
-        const clickedResource = this.resourceSprites.find(sprite => {
-          const spriteTileX = Math.floor(sprite.x / this.tileSize);
-          const spriteTileY = Math.floor(sprite.y / this.tileSize);
-          return spriteTileX === tileX && spriteTileY === tileY;
-        });
+        // Distinguish between Villager and Soldier
+        const isVillager = (unit: any): unit is VillagerData => {
+          return (unit as VillagerData).carrying !== undefined;
+        };
 
-        // Check dropped resource click
-        const clickedDropped = this.droppedResources.find(dr => {
-          const drX = Math.floor(dr.sprite.x / this.tileSize);
-          const drY = Math.floor(dr.sprite.y / this.tileSize);
-          return drX === tileX && drY === tileY;
-        });
+        if (isVillager(this.selectedUnit)) {
+          // Check resource click
+          const clickedResource = this.resourceSprites.find(sprite => {
+            const spriteTileX = Math.floor(sprite.x / this.tileSize);
+            const spriteTileY = Math.floor(sprite.y / this.tileSize);
+            return spriteTileX === tileX && spriteTileY === tileY;
+          });
 
-        if (clickedResource) {
-          this.startGatheringResource(this.selectedUnit, clickedResource);
-        } else if (clickedDropped) {
-          this.startPickingUpDropped(this.selectedUnit, clickedDropped);
+          // Check dropped resource click
+          const clickedDropped = this.droppedResources.find(dr => {
+            const drX = Math.floor(dr.sprite.x / this.tileSize);
+            const drY = Math.floor(dr.sprite.y / this.tileSize);
+            return drX === tileX && drY === tileY;
+          });
+
+          if (clickedResource) {
+            this.startGatheringResource(this.selectedUnit, clickedResource);
+          } else if (clickedDropped) {
+            this.startPickingUpDropped(this.selectedUnit, clickedDropped);
+          } else {
+            this.moveVillagerToTile(this.selectedUnit, tileX, tileY);
+          }
         } else {
-          this.moveVillagerToTile(this.selectedUnit, tileX, tileY);
+          // Soldier Logic (Movement only for now)
+          this.moveSoldierToTile(this.selectedUnit as SoldierData, tileX, tileY);
         }
         return;
       }
@@ -492,6 +554,9 @@ class WorldScene extends Phaser.Scene {
     window.addEventListener("requestUpgrade", this.handleRequestUpgrade);
     window.addEventListener("requestRecruit", this.handleRequestRecruit);
     window.addEventListener("enterBuildMode", this.handleEnterBuildMode);
+
+    window.addEventListener("assignVillager", ((e: CustomEvent<{ id: string }>) => this.assignVillagerToBuilding(e.detail.id)) as EventListener);
+    window.addEventListener("unassignVillager", ((e: CustomEvent<{ id: string }>) => this.unassignVillagerFromBuilding(e.detail.id)) as EventListener);
 
     this.events.on(Phaser.Scenes.Events.SHUTDOWN, () => {
       window.removeEventListener("spawnVillager", this.handleSpawnVillager);
@@ -558,6 +623,108 @@ class WorldScene extends Phaser.Scene {
     this.emitPopulationUpdate();
   }
 
+  private spawnSoldier(startX?: number, startY?: number) {
+    const sX = startX ? Math.floor(startX / this.tileSize) : this.villageCenterX;
+    const sY = startY ? Math.floor(startY / this.tileSize) : this.villageCenterY;
+
+    // Find free spot
+    let spawnX = 0;
+    let spawnY = 0;
+    let found = false;
+
+    for (let r = 1; r < 4; r++) { // Closer radius for soldiers
+      for (let x = sX - r; x <= sX + r; x++) {
+        for (let y = sY - r; y <= sY + r; y++) {
+          if (!this.isTileOccupied(x, y)) {
+            spawnX = x;
+            spawnY = y;
+            found = true;
+            break;
+          }
+        }
+        if (found) break;
+      }
+      if (found) break;
+    }
+
+    if (!found) {
+      console.log("No space for soldier!");
+      return;
+    }
+
+    const sprite = this.add.sprite(
+      spawnX * this.tileSize + this.tileSize / 2,
+      spawnY * this.tileSize + this.tileSize / 2,
+      "soldier"
+    );
+    sprite.setDisplaySize(this.tileSize, this.tileSize);
+    sprite.setInteractive({ useHandCursor: true });
+
+    this.soldiers.push({
+      sprite,
+      state: "idle"
+    });
+  }
+
+
+
+  private assignVillagerToBuilding(buildingId: string) {
+    const building = this.buildings.find(b => b.id === buildingId);
+    if (!building || building.assignedVillagers >= 4) return;
+
+    // Find idle villager
+    const idleVillager = this.villagers.find(v => v.state === "idle");
+    if (!idleVillager) {
+      return;
+    }
+
+    // Remove from map
+    idleVillager.sprite.destroy();
+    if (idleVillager.textLabel) idleVillager.textLabel.destroy();
+    this.villagers = this.villagers.filter(v => v !== idleVillager);
+
+    building.assignedVillagers++;
+
+    // Start Production Loop if not started
+    if (!building.productionTimer) {
+      building.productionTimer = this.time.addEvent({
+        delay: 2000,
+        loop: true,
+        callback: () => {
+          if (building.assignedVillagers > 0) {
+            const amount = building.assignedVillagers * 2; // 2x per worker
+            let type = "";
+            if (building.type === "gold_mine") type = "gold";
+            else if (building.type === "stone_mine") type = "stone";
+            else if (building.type === "metal_mine") type = "metal";
+            else if (building.type === "lumber_mill") type = "wood";
+
+            if (type === "wood") this.resources.wood += amount;
+            else if (type === "stone") this.resources.stone += amount;
+            else if (type === "gold") this.resources.gold += amount;
+            else if (type === "metal") this.resources.metal += amount;
+
+            this.emitResourceUpdate();
+            // Floating text
+            this.showFloatingText(building.sprite.x, building.sprite.y - 20, `+${amount}`, "#ffff00");
+          }
+        }
+      });
+    }
+
+    this.emitBuildingUpdate(building);
+    this.emitPopulationUpdate(); // Update population count since one "left" the map (entered building)
+  }
+
+  private unassignVillagerFromBuilding(buildingId: string) {
+    const building = this.buildings.find(b => b.id === buildingId);
+    if (!building || building.assignedVillagers <= 0) return;
+
+    building.assignedVillagers--;
+    this.spawnVillager(building.sprite.x, building.sprite.y);
+    this.emitBuildingUpdate(building);
+  }
+
   private emitPopulationUpdate() {
     window.dispatchEvent(new CustomEvent("populationUpdate", {
       detail: { current: this.villagers.length, max: this.maxPopulation }
@@ -572,6 +739,7 @@ class WorldScene extends Phaser.Scene {
     );
     sprite.setDisplaySize(this.tileSize, this.tileSize);
     sprite.setData("resourceType", key);
+    sprite.setData("quantity", 1000); // Initial quantity
     sprite.setData("tileX", tileX);
     sprite.setData("tileY", tileY);
     return sprite;
@@ -594,6 +762,7 @@ class WorldScene extends Phaser.Scene {
 
     // Check other villagers (optional, but good for avoiding stacking)
     if (this.villagers.some(v => Math.floor(v.sprite.x / this.tileSize) === x && Math.floor(v.sprite.y / this.tileSize) === y)) return true;
+    if (this.soldiers.some(s => Math.floor(s.sprite.x / this.tileSize) === x && Math.floor(s.sprite.y / this.tileSize) === y)) return true;
 
     return false;
   }
@@ -623,6 +792,7 @@ class WorldScene extends Phaser.Scene {
         if (this.isTileOccupied(tileX, tileY)) continue;
 
         const sprite = this.addResourceSprite(tileX, tileY, "tree");
+        sprite.setDisplaySize(this.tileSize * 1.5, this.tileSize * 1.5);
         this.resourceSprites.push(sprite);
       }
     }
@@ -648,7 +818,7 @@ class WorldScene extends Phaser.Scene {
     }
   }
 
-  private selectUnit(unit: VillagerData) {
+  private selectUnit(unit: VillagerData | SoldierData) {
     this.selectedUnit = unit;
     this.drawSelectionIndicator();
   }
@@ -656,6 +826,37 @@ class WorldScene extends Phaser.Scene {
   private deselectUnit() {
     this.selectedUnit = null;
     this.selectionIndicator.clear();
+    // Also deselect resource if any
+    this.deselectResource();
+  }
+
+  private deselectResource() {
+    if (this.selectedResource) {
+      this.selectedResource = null;
+      this.selectionIndicator.clear();
+      window.dispatchEvent(new CustomEvent("resourceSelection", { detail: null }));
+    }
+  }
+
+  private selectResource(resource: Phaser.GameObjects.Sprite) {
+    this.selectedResource = resource;
+    this.selectedUnit = null; // Deselect unit if any
+    this.selectionIndicator.clear();
+    this.selectionIndicator.lineStyle(2, 0xffffff, 1);
+    const x = resource.x - this.tileSize / 2;
+    const y = resource.y - this.tileSize / 2;
+    this.selectionIndicator.strokeRect(x, y, this.tileSize, this.tileSize);
+
+    this.emitResourceSelection(resource);
+  }
+
+  private emitResourceSelection(resource: Phaser.GameObjects.Sprite) {
+    window.dispatchEvent(new CustomEvent("resourceSelection", {
+      detail: {
+        type: resource.getData("resourceType"),
+        quantity: resource.getData("quantity") || 0
+      }
+    }));
   }
 
   private hideGatheringText() {
@@ -829,6 +1030,26 @@ class WorldScene extends Phaser.Scene {
     return null;
   }
 
+  private moveSoldierToTile(soldier: SoldierData, tileX: number, tileY: number) {
+    const targetX = tileX * this.tileSize + this.tileSize / 2;
+    const targetY = tileY * this.tileSize + this.tileSize / 2;
+    const distance = Phaser.Math.Distance.Between(soldier.sprite.x, soldier.sprite.y, targetX, targetY);
+    const speed = 250; // Soldiers faster than villagers (200)
+    const duration = (distance / speed) * 1000;
+
+    soldier.state = "walking";
+    this.tweens.add({
+      targets: soldier.sprite,
+      x: targetX,
+      y: targetY,
+      duration: duration,
+      ease: "Linear",
+      onComplete: () => {
+        soldier.state = "idle";
+      }
+    });
+  }
+
   private moveVillagerToTile(villager: VillagerData, tileX: number, tileY: number, onComplete?: () => void) {
     const targetX = tileX * this.tileSize + this.tileSize / 2;
     const targetY = tileY * this.tileSize + this.tileSize / 2;
@@ -928,6 +1149,38 @@ class WorldScene extends Phaser.Scene {
       villager.textLabel = undefined;
     }
 
+    // Deplete resource
+    if (villager.targetResource && villager.targetResource.active) {
+      let currentQty = villager.targetResource.getData("quantity") || 0;
+      currentQty -= amount;
+      villager.targetResource.setData("quantity", currentQty);
+
+      // Update UI if this resource is selected
+      if (this.selectedResource === villager.targetResource) {
+        this.emitResourceSelection(villager.targetResource);
+      }
+
+      if (currentQty <= 0) {
+        // Resource depleted
+        this.showFloatingText(
+          villager.targetResource.x,
+          villager.targetResource.y - 20,
+          "Depleted!",
+          "#ff0000"
+        );
+
+        // Remove from list
+        this.resourceSprites = this.resourceSprites.filter(s => s !== villager.targetResource);
+
+        // Destroy sprite
+        villager.targetResource.destroy();
+        villager.targetResource = null;
+
+        // Stop gathering loop for this villager? 
+        // actually startGatheringResource will handle it on next cycle if target is inactive/undefined
+      }
+    }
+
     // Return to resource
     if (villager.targetResource && villager.targetResource.active) {
       this.startGatheringResource(villager, villager.targetResource);
@@ -969,12 +1222,61 @@ class WorldScene extends Phaser.Scene {
   }
 
   private getBuildingSize(type: string | null): number {
-    return type === "farm" ? 2 : 3;
+    return type === "farm" ? 2 : type === "barracks" ? 3 : type?.includes("mine") ? 2 : type === "lumber_mill" ? 3 : 3;
+  }
+
+  private canBuildMineAt(tileX: number, tileY: number, resourceType: string): boolean {
+    const resource = this.resourceSprites.find(r => r.getData("tileX") === tileX && r.getData("tileY") === tileY);
+    return !!resource && resource.getData("resourceType") === resourceType;
+  }
+
+  private canBuildLumberMillAt(tileX: number, tileY: number): boolean {
+    // Check adjacency to tree
+    const size = this.getBuildingSize("lumber_mill");
+    for (let x = tileX - 1; x <= tileX + size; x++) {
+      for (let y = tileY - 1; y <= tileY + size; y++) {
+        const resource = this.resourceSprites.find(r => r.getData("tileX") === x && r.getData("tileY") === y);
+        if (resource && resource.getData("resourceType") === "tree") return true;
+      }
+    }
+    return false;
   }
 
   private placeBuilding(tileX: number, tileY: number) {
     const currentBuildingType = this.buildingType || "village"; // Capture before clearing
     const sizeInTiles = this.getBuildingSize(currentBuildingType);
+
+    // Custom Validation
+    if (currentBuildingType === "gold_mine") {
+      if (!this.canBuildMineAt(tileX, tileY, "gold")) {
+        console.log("Must build on Gold!");
+        return;
+      }
+    } else if (currentBuildingType === "stone_mine") {
+      if (!this.canBuildMineAt(tileX, tileY, "stone")) {
+        console.log("Must build on Stone!");
+        return;
+      }
+    } else if (currentBuildingType === "metal_mine") {
+      if (!this.canBuildMineAt(tileX, tileY, "metal")) {
+        console.log("Must build on Metal!");
+        return;
+      }
+    } else if (currentBuildingType === "lumber_mill") {
+      if (!this.canBuildLumberMillAt(tileX, tileY)) {
+        console.log("Must build near trees!");
+        return;
+      }
+    }
+
+    // Consume Resource if Mine
+    if (currentBuildingType.includes("mine")) {
+      const resource = this.resourceSprites.find(r => r.getData("tileX") === tileX && r.getData("tileY") === tileY);
+      if (resource) {
+        resource.destroy();
+        this.resourceSprites = this.resourceSprites.filter(r => r !== resource);
+      }
+    }
 
     this.isBuildingMode = false;
     this.ghostBuilding.setVisible(false);
@@ -1007,14 +1309,16 @@ class WorldScene extends Phaser.Scene {
 
     // Timer
     let progress = 0;
+    const totalTicks = currentBuildingType === "farm" ? 70 : currentBuildingType === "barracks" ? 100 : 100; // 7s farm, 10s others
+
     const timer = this.time.addEvent({
       delay: 100,
-      repeat: 100, // 100 * 100ms = 10s
+      repeat: totalTicks,
       callback: () => {
         progress += 1;
-        bar.width = (progress / 100) * 60;
+        bar.width = (progress / totalTicks) * 60;
 
-        if (progress >= 100) {
+        if (progress >= totalTicks) {
           site.destroy();
           barBg.destroy();
           bar.destroy();
@@ -1045,6 +1349,7 @@ class WorldScene extends Phaser.Scene {
             upgradeProgress: 0,
             isRecruiting: false,
             recruitProgress: 0,
+            assignedVillagers: 0,
             tileX: tileX,
             tileY: tileY
           };
@@ -1061,6 +1366,14 @@ class WorldScene extends Phaser.Scene {
               built.y - 40,
               "Pop Cap +5!",
               "#00ff00"
+            );
+          } else if (type === "barracks") {
+            // Show floating text
+            this.showFloatingText(
+              built.x,
+              built.y - 40,
+              "Barracks Ready!",
+              "#ffaa00"
             );
           }
 
